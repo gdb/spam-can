@@ -16,7 +16,7 @@ module SpamCan
     def run
       records = 0
       # TODO: update this
-      Model::TrainingEmail.all(:trained => { '$ne' => true }).each do |email|
+      Model::TrainingEmail.all('trained' => false).each do |email|
         break if $should_exit
 
         update_tables_with_email(email)
@@ -37,7 +37,7 @@ module SpamCan
       tokenized.each do |token|
         # TODO: make this atomic?
         Model::TrainedTable.collection.update({
-                                                'word' => BSON::Binary.new(token),
+                                                'word' => binary(token),
                                                 'type' => email.type
                                               },
                                               {
@@ -139,20 +139,12 @@ def main
     return 1
   end
 
-  Signal.trap("INT") do
-    puts "Preparing to exit..."
-    $should_exit = true
-  end
-  Signal.trap("TERM") do
-    puts "Preparing to exit..."
-    $should_exit = true
-  end
-
   if options[:refresh]
     runner = SpamCan::ProbabilityTableRefresher.new
   else
     runner = SpamCan::TrainFilter.new
   end
+  runner.handle_signals
   runner.run
   return 0
 end

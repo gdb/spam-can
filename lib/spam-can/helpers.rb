@@ -8,12 +8,35 @@ module SpamCan
       puts msg
     end
 
+    def log_info(msg)
+    end
+
     def input(prompt)
       $stdout.write(prompt)
       $stdout.write(' ')
       $stdout.flush
       line = $stdin.readline
       line.strip
+    end
+
+    def handle_signals
+      Signal.trap("INT") { schedule_exit }
+      Signal.trap("TERM") { schedule_exit }
+    end
+
+    def schedule_exit
+      if $should_exit
+        puts "Second exit request received, shutting down now"
+        exit(1)
+      else
+        puts "First exit request received, gracefully shutting down"
+        $should_exit = true
+      end
+    end
+
+    # Could change this to BSON::Binary
+    def binary(str)
+      str
     end
   end
 
@@ -26,7 +49,7 @@ module SpamCan
         token.length > 0 && token !~ /^\d+$/
       end
       body = body.map { |token| token.downcase }
-      body.uniq
+      body = Set.new(body)
       body
     end
   end

@@ -10,7 +10,7 @@ module SpamCan
       include MongoMapper::Document
       ensure_index :body, :unique => true
 
-      key :body, BSON::Binary
+      key :body, String
       key :type, String
       key :trained, Boolean
       timestamps!
@@ -21,7 +21,7 @@ module SpamCan
         if body.to_s =~ /^message-id: (.*)/
           $1
         else
-          raise "No message id for #{body.to_s.inspect}"
+          nil
         end
       end
 
@@ -29,18 +29,28 @@ module SpamCan
         return unless body
 
         str = body.to_s
-        if str =~ /\n([^:]\n.*)/
+        if str =~ /^.*?\r\n\r\n(.*)$/m
           $1
         elsif body !~ /:/
           body
         else
-          raise "No body for #{str.to_s.inspect}"
+          nil
         end
       end
 
       def to_s
-        data = (d = extract_data) ? d[0..20] : nil
-        "<#{self.class}[#{id}] type=#{type} data=#{d.inspect} message_id=#{extract_message_id.inspect}"
+        data = (d = extract_data) ? "#{d[0..20]}..." : nil
+        attrs = [['type', type], ['data', data], ['message_id', extract_message_id]].select { |a,b| b }
+        "<#{self.class}[#{id}] #{attrs.map {|a,b| "#{a}=#{b.inspect}"}.join(' ')}>"
+      end
+
+      def spam?
+        case type
+        when 'spam', 'testing_spam': true
+        when 'good', 'testing_good': false
+        else
+          raise "Unrecognized type #{type.inspect}"
+        end
       end
     end
 
@@ -48,7 +58,7 @@ module SpamCan
       include MongoMapper::Document
       ensure_index [[:type, 1], [:word, 1]], :unique => true
 
-      key :word, BSON::Binary
+      key :word, String
       key :type, String
       key :count, Numeric
     end
@@ -57,7 +67,7 @@ module SpamCan
       include MongoMapper::Document
       ensure_index [[:word, 1]], :unique => true
 
-      key :word, BSON::Binary
+      key :word, String
       key :probability, Numeric
     end
   end

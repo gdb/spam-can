@@ -16,18 +16,18 @@ module SpamCan
     def run
       records = 0
       # TODO: update this
-      Model::TrainingEmail.all(:type => 'testing_spam').each do |email|
+      Model::TrainingEmail.all(:type => /^testing_(spam|good)/).each do |email|
         break if $should_exit
 
-        log_announce("Starting to score email #{email.id}")
+        log_info("Starting to score email #{email.id}")
         body = email.body
-        log_announce("Tokenizing email #{email.id}")
+        log_info("Tokenizing email #{email.id}")
         tokens = tokenize(body)
 
-        log_announce("Assigning probabilities to each token in #{email.id}")
+        log_info("Assigning probabilities to each token in #{email.id}")
         scores = {}
         tokens.each do |token|
-          if pt = Model::ProbabilityTable.first(:word => BSON::Binary.new(token))
+          if pt = Model::ProbabilityTable.first(:word => binary(token))
             p = pt.probability
           else
             p = 0.4
@@ -37,14 +37,15 @@ module SpamCan
 
         # Could be a heap, but meh.
         most_interesting = scores.sort_by { |key, value| -(0.5-value).abs }[0...15]
-        log_announce("Most interesting tokens: #{most_interesting.inspect}")
+        log_info("Most interesting tokens: #{most_interesting.inspect}")
         probs = most_interesting.map { |key, value| value }
         num = product(probs)
         denom2 = product(probs) { |value| 1 - value }
 
         prob = num / (num + denom2)
+        is_spam = prob > 0.9
 
-        log_announce("Probability that this email (#{email.id}) is spam: #{prob} (num: #{num} denom2: #{denom2})")
+        log_announce("Probability #{prob} of #{email} being spam (#{is_spam == email.spam? ? 'correct!' : 'wrong'})")
 
         records += 1
       end
@@ -87,16 +88,8 @@ def main
     return 1
   end
 
-  Signal.trap("INT") do
-    puts "Preparing to exit..."
-    $should_exit = true
-  end
-  Signal.trap("TERM") do
-    puts "Preparing to exit..."
-    $should_exit = true
-  end
-
   runner = SpamCan::ApplyFilter.new
+  runner.handle_signals
   runner.run
   return 0
 end

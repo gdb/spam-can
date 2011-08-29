@@ -5,6 +5,7 @@ require 'rubygems'
 require 'net/imap'
 
 require File.join(File.dirname(__FILE__), '../lib/spam-can')
+require 'iconv'
 
 $log = Logger.new(STDOUT)
 $log.level = Logger::WARN
@@ -13,7 +14,8 @@ module SpamCan
   class UpdateCorpus
     include CLIHelper
     attr_accessor :conn
-    DEFAULT_MAX = 200
+
+    DEFAULT_MAX = 2000
 
     def initialize(hostname, username, password)
       @hostname = hostname
@@ -31,28 +33,30 @@ module SpamCan
     end
 
     def run
+      testing_set_size = 100
+
       t1 = Thread.new {
         conn = connect
         conn.select('[Gmail]/Spam')
-        fetch_as_type(conn, 'spam')
+        fetch_as_type(conn, 'spam', testing_set_size)
       }
 
       t2 = Thread.new {
         conn = connect
         conn.select('[Gmail]/Spam')
-        fetch_as_type(conn, 'testing_spam', DEFAULT_MAX)
+        fetch_as_type(conn, 'testing_spam', 0, testing_set_size)
       }
 
       t3 = Thread.new {
         conn = connect
         conn.select('[Gmail]/All Mail')
-        fetch_as_type(conn, 'good')
+        fetch_as_type(conn, 'good', testing_set_size)
       }
 
       t4 = Thread.new {
         conn = connect
         conn.select('[Gmail]/All Mail')
-        fetch_as_type(conn, 'testing_good', DEFAULT_MAX)
+        fetch_as_type(conn, 'testing_good', 0, testing_set_size)
       }
 
       [t1, t2, t3].each { |t| t.join }
@@ -63,10 +67,22 @@ module SpamCan
       fetched = email_fetch(conn, offset, max)
       log_announce("Going to save the #{fetched.length} fetched #{type} emails")
       fetched.each do |body|
-        model = Model::TrainingEmail.new(:body => BSON::Binary.new(body),
-                                         :type => type)
+        body = sanitize_utf8(body)
+        model = Model::TrainingEmail.new('body' => binary(body),
+                                         'type' => type,
+                                         'trained' => false)
         model.save
       end
+    end
+
+    def sanitize_utf8(str)
+      return nil if str.nil?
+      # Per http://po-ru.com/diary/fixing-invalid-utf-8-in-ruby-revisited/
+      # iconv will break if given an invalid trailing byte.  Without this
+      # space hack, sanitizing e.g. "\378" will fail
+      safe_str = str + ' '
+      sanitized = Iconv.conv('UTF-8//IGNORE', 'UTF-8', safe_str)
+      sanitized[0...-1]
     end
 
     def email_count(conn)
@@ -116,6 +132,7 @@ def main
   username = options[:username] || SpamCan::Settings[:imap, :username]
   password = options[:password] || SpamCan::Settings[:imap, :password]
   runner = SpamCan::UpdateCorpus.new(hostname, username, password)
+  runner.handle_signals
   runner.run
   return 0
 end
