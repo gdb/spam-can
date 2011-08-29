@@ -1,15 +1,87 @@
+require 'set'
+
 module SpamCan
+  module EMHelper
+    def gather(*deferred)
+      raise "Cannot take block directly" if block_given?
+      outcome = EM::DefaultDeferrable.new
+
+      failed = false
+      deferred_count = deferred.length
+      success_count = 0
+      results = []
+
+      deferred.each_with_index do |d, i|
+        d.callback do |res|
+          break if failed
+          success_count += 1
+          results[i] = res
+
+          if success_count == deferred_count
+            outcome.succeed(*results)
+          end
+        end
+
+        d.errback do |err|
+          break if failed
+          failed = true
+
+          outcome.fail([i, d], err)
+        end
+      end
+
+      outcome
+    end
+
+    def lazy_map(deferred, &blk)
+      outcome = EM::DefaultDeferrable.new
+
+      deferred.callback do |res|
+        outcome.succeed(blk.call(res))
+      end
+      deferred.errback do |err|
+        outcome.fail(err)
+      end
+
+      outcome
+    end
+  end
+
+  module LogHelper
+    # Mock out a better implementation
+    def log_announce(msg); $stderr.puts(msg); end
+    def log_error(msg, e=nil)
+      msg = "#{msg}: #{e}" if e
+      $stderr.puts(msg)
+    end
+    def log_info(msg); end
+    def log_warn(msg); $stderr.puts(msg); end
+    def log_debug(msg); end
+  end
+
   module CLIHelper
+    include LogHelper
+    @@cnts = {}
+
+    def run
+      handle_signals
+      EM.next_tick { do_run }
+      # Need to figure out how to finish
+      EM.run {}
+      puts @@cnts.inspect
+    end
+
+    def checkpoint(which)
+      @@cnts[which] ||= 0
+      @@cnts[which] += 1
+      exit(0) if should_exit
+    end
+
     def should_exit
       $should_exit
     end
 
-    def log_announce(msg)
-      puts msg
-    end
-
-    def log_info(msg)
-    end
+    private
 
     def input(prompt)
       $stdout.write(prompt)
@@ -32,11 +104,6 @@ module SpamCan
         puts "First exit request received, gracefully shutting down"
         $should_exit = true
       end
-    end
-
-    # Could change this to BSON::Binary
-    def binary(str)
-      str
     end
   end
 

@@ -12,44 +12,45 @@ module SpamCan
   class ApplyFilter
     include CLIHelper
     include SpamHelper
+    include EMHelper
 
-    def run
-      records = 0
-      # TODO: update this
-      Model::TrainingEmail.all(:type => /^testing_(spam|good)/).each do |email|
-        break if $should_exit
+    def do_run
+      Model::Email.find(:training => false).each do |email|
+        checkpoint(:email)
 
-        log_info("Starting to score email #{email.id}")
-        body = email.body
-        log_info("Tokenizing email #{email.id}")
-        tokens = tokenize(body)
+        tokens = tokenize(email.contents)
+        log_info("Split email #{email} into #{tokens.length} tokens")
 
-        log_info("Assigning probabilities to each token in #{email.id}")
-        scores = {}
-        tokens.each do |token|
-          if pt = Model::ProbabilityTable.first(:word => binary(token))
-            p = pt.probability
-          else
-            p = 0.4
+        token_counts = tokens.map { |token| Model::TokenCount.find_one(:word => token) }
+        g = gather(*token_counts)
+        g.callback do |*results|
+          log_info("Assigning probabilities to each token in #{email.id}")
+          scores = {}
+          tokens.zip(results).each do |token, token_count|
+            if token_count && token_count.probability > 0
+              p = token_count.probability
+            else
+              p = 0.4
+            end
+            scores[token] = p
           end
-          scores[token] = p
+
+          # Could be a heap, but meh.
+          most_interesting = scores.sort_by { |key, value| -(0.5-value).abs }[0...15]
+          log_info("Most interesting tokens: #{most_interesting.inspect}")
+          probs = most_interesting.map { |key, value| value }
+          num = product(probs)
+          denom2 = product(probs) { |value| 1 - value }
+
+          prob = num / (num + denom2)
+          is_spam = prob > 0.9
+
+          log_announce("Probability #{prob} of #{email} being spam (#{is_spam == email.spam ? 'correct!' : 'wrong'})")
         end
-
-        # Could be a heap, but meh.
-        most_interesting = scores.sort_by { |key, value| -(0.5-value).abs }[0...15]
-        log_info("Most interesting tokens: #{most_interesting.inspect}")
-        probs = most_interesting.map { |key, value| value }
-        num = product(probs)
-        denom2 = product(probs) { |value| 1 - value }
-
-        prob = num / (num + denom2)
-        is_spam = prob > 0.9
-
-        log_announce("Probability #{prob} of #{email} being spam (#{is_spam == email.spam? ? 'correct!' : 'wrong'})")
-
-        records += 1
+        g.errback do |_, err|
+          log_error("Error", err)
+        end
       end
-      log_announce("Processed #{records} emails")
     end
 
     def product(ary, &blk)
@@ -89,7 +90,6 @@ def main
   end
 
   runner = SpamCan::ApplyFilter.new
-  runner.handle_signals
   runner.run
   return 0
 end

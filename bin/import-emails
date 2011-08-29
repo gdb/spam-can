@@ -1,0 +1,129 @@
+#!/usr/bin/env ruby
+require 'logger'
+require 'optparse'
+require 'rubygems'
+require 'net/imap'
+require 'digest/sha1'
+
+require File.join(File.dirname(__FILE__), '../lib/spam-can')
+require 'iconv'
+
+$log = Logger.new(STDOUT)
+$log.level = Logger::WARN
+
+module SpamCan
+  class EmailQueue
+    def initialize(directory, spam)
+      @directory = directory
+      @spam = spam
+    end
+
+    def length
+      files.length
+    end
+
+    def each(&blk)
+      files.each do |name|
+        contents = File.read(name)
+        blk.call(contents, @spam)
+      end
+    end
+
+    private
+
+    def files
+      @files ||= Dir[File.join(@directory, '*')]
+    end
+  end
+
+  class ImportEmails
+    include CLIHelper
+
+    def initialize(email_queues)
+      @email_queues = email_queues
+    end
+
+    def do_run
+      @email_queues.each do |email_queue|
+        checkpoint(:queue)
+
+        # TODO: may want to yield to EM in here
+        email_queue.each do |contents, spam|
+          checkpoint(:email)
+
+          safe_contents = sanitize_utf8(contents)
+          log_warn("Sanitized invalid UTF-8 in #{contents.inspect}") unless safe_contents == contents
+          sha1sum = Digest::SHA1.digest(safe_contents)
+          te = Model::Email.new(:sha1sum => BSON::Binary.new(sha1sum),
+                                :contents => safe_contents,
+                                :spam => spam,
+                                :training => reserve_for_training?,
+                                :already_trained => false)
+          id = te.save
+          log_announce("Attempted to save #{id}")
+        end
+      end
+    end
+
+    def reserve_for_training?
+      rand > 0.5
+    end
+
+    def sanitize_utf8(str)
+      return nil if str.nil?
+      # Per http://po-ru.com/diary/fixing-invalid-utf-8-in-ruby-revisited/
+      # iconv will break if given an invalid trailing byte.  Without this
+      # space hack, sanitizing e.g. "\378" will fail
+      safe_str = str + ' '
+      sanitized = Iconv.conv('UTF-8//IGNORE', 'UTF-8', safe_str)
+      sanitized[0...-1]
+    end
+  end
+end
+
+def main
+  options = {}
+  optparse = OptionParser.new do |opts|
+    opts.banner = "Usage: #{$0} [options]"
+    
+    opts.on('-v', '--verbosity', 'Verbosity of debugging output') do
+      $log.level -= 1
+    end
+    
+    opts.on('-h', '--help', 'Display this message') do
+      puts opts
+      exit(1)
+    end
+  end
+  optparse.parse!
+
+  if ARGV.length == 0
+    puts optparse
+    return 1
+  end
+
+  email_queues = ARGV.map do |dir_spec|
+    dir, spam_spec = dir_spec.split(':')
+    if spam_spec == 'spam'
+      spam = true
+    elsif spam_spec == 'ham'
+      spam = false
+    else
+      raise "Invalid spam spec: #{spam_spec.inspect} (in dir spec #{dir_spec.inspect})"
+    end
+    SpamCan::EmailQueue.new(dir, spam)
+  end
+
+  runner = SpamCan::ImportEmails.new(email_queues)
+  runner.run
+  return 0
+end
+
+if $0 == __FILE__
+  ret = main
+  begin
+    exit(ret)
+  rescue TypeError
+    exit(0)
+  end
+end
