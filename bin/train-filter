@@ -1,0 +1,167 @@
+#!/usr/bin/env ruby
+require 'logger'
+require 'optparse'
+require 'rubygems'
+
+require File.join(File.dirname(__FILE__), '../lib/spam-can')
+
+$log = Logger.new(STDOUT)
+$log.level = Logger::WARN
+
+module SpamCan
+  class TrainFilter
+    include CLIHelper
+    include SpamHelper
+
+    def run
+      records = 0
+      # TODO: update this
+      Model::TrainingEmail.all(:trained => { '$ne' => true }).each do |email|
+        break if $should_exit
+
+        update_tables_with_email(email)
+        email.trained = true
+        email.save
+
+        records += 1
+      end
+      log_announce("Processed #{records} emails")
+    end
+
+    def update_tables_with_email(email)
+      body = email.body
+      log_announce("About to tokenize #{email}")
+      tokenized = tokenize(body)
+
+      log_announce("About to process #{email} (tokenized into #{tokenized.length} unique tokens)")
+      tokenized.each do |token|
+        # TODO: make this atomic?
+        Model::TrainedTable.collection.update({
+                                                'word' => BSON::Binary.new(token),
+                                                'type' => email.type
+                                              },
+                                              {
+                                                '$inc' => { 'count' => 1 }
+                                              },
+                                              :upsert => 1)
+      end
+    end
+  end
+
+  class ProbabilityTableRefresher
+    include CLIHelper
+
+    def run
+      records = 0
+      # Does about twice as much work as it strictly has to, since it
+      # loads the spam and the good once each. However, this allows us
+      # to make sure we get good words with no spam component and
+      # vice-versa.
+      Model::TrainedTable.find_each('type' => /^(spam|good)$/) do |tt|
+        break if should_exit
+
+        case tt.type
+        when 'spam'
+          is_spam = true
+          other_type = 'good'
+        when 'good'
+          is_spam = false
+          other_type = 'spam'
+        else
+          raise "Invalid type #{tt.type.inspect}"
+        end
+
+        other_tt = Model::TrainedTable.first('word' => tt.word,
+                                             'type' => other_type)
+        if is_spam
+          good_count = other_tt ? other_tt.count : 0
+          bad_count = tt.count
+        else
+          good_count = tt.count
+          bad_count = other_tt ? other_tt.count : 0
+        end
+
+        good_score = 2 * good_count
+        bad_score = bad_count
+        score_total = good_score + bad_score
+
+        number_good = Model::TrainedTable.count('type' => 'good')
+        number_bad = Model::TrainedTable.count('type' => 'spam')
+
+        if score_total >= 5
+          good_component = number_good != 0 ? min(1, good_score / number_good.to_f) : 1
+          bad_component = number_bad != 0 ? min(1, bad_score / number_bad.to_f) : 1
+          denom = good_component + bad_component
+          probability = denom != 0 ? min(0.99, bad_component / denom) : 0.99
+          probability = max(0.01, probability)
+          log_announce("Score total is #{score_total}, setting probability for #{tt.word} to #{probability}")
+          Model::ProbabilityTable.collection.update({ 'word' => tt.word },
+                                                    {
+                                                      '$set' => { 'probability' => probability }
+                                                    },
+                                                    :upsert => true)
+        else
+          log_announce("Score total is #{score_total}, so skipping #{tt.word}")
+          Model::ProbabilityTable.delete(:word => tt.word)
+        end
+        records += 1
+      end
+      log_announce("Processed #{records} words")
+    end
+
+    def min(*args); args.min; end
+    def max(*args); args.max; end
+  end
+end
+
+def main
+  options = {}
+  optparse = OptionParser.new do |opts|
+    opts.banner = "Usage: #{$0} [options]"
+    
+    opts.on('-v', '--verbosity', 'Verbosity of debugging output') do
+      $log.level -= 1
+    end
+    
+    opts.on('-h', '--help', 'Display this message') do
+      puts opts
+      exit(1)
+    end
+
+    opts.on('-r', '--refresh', 'Refresh the probability table') do
+      options[:refresh] = true
+    end
+  end
+  optparse.parse!
+  
+  if ARGV.length != 0
+    puts optparse
+    return 1
+  end
+
+  Signal.trap("INT") do
+    puts "Preparing to exit..."
+    $should_exit = true
+  end
+  Signal.trap("TERM") do
+    puts "Preparing to exit..."
+    $should_exit = true
+  end
+
+  if options[:refresh]
+    runner = SpamCan::ProbabilityTableRefresher.new
+  else
+    runner = SpamCan::TrainFilter.new
+  end
+  runner.run
+  return 0
+end
+
+if $0 == __FILE__
+  ret = main
+  begin
+    exit(ret)
+  rescue TypeError
+    exit(0)
+  end
+end

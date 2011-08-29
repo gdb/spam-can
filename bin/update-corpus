@@ -1,0 +1,130 @@
+#!/usr/bin/env ruby
+require 'logger'
+require 'optparse'
+require 'rubygems'
+require 'net/imap'
+
+require File.join(File.dirname(__FILE__), '../lib/spam-can')
+
+$log = Logger.new(STDOUT)
+$log.level = Logger::WARN
+
+module SpamCan
+  class UpdateCorpus
+    include CLIHelper
+    attr_accessor :conn
+    DEFAULT_MAX = 200
+
+    def initialize(hostname, username, password)
+      @hostname = hostname
+      @username = username
+      @password = password
+      connect
+    end
+
+    def connect
+      log_announce("Connecting to #{@hostname}")
+      conn = Net::IMAP.new(@hostname, 993, true)
+      log_announce("Logging in as #{@username}")
+      conn.login(@username, @password)
+      conn
+    end
+
+    def run
+      t1 = Thread.new {
+        conn = connect
+        conn.select('[Gmail]/Spam')
+        fetch_as_type(conn, 'spam')
+      }
+
+      t2 = Thread.new {
+        conn = connect
+        conn.select('[Gmail]/Spam')
+        fetch_as_type(conn, 'testing_spam', DEFAULT_MAX)
+      }
+
+      t3 = Thread.new {
+        conn = connect
+        conn.select('[Gmail]/All Mail')
+        fetch_as_type(conn, 'good')
+      }
+
+      t4 = Thread.new {
+        conn = connect
+        conn.select('[Gmail]/All Mail')
+        fetch_as_type(conn, 'testing_good', DEFAULT_MAX)
+      }
+
+      [t1, t2, t3].each { |t| t.join }
+    end
+
+    def fetch_as_type(conn, type, offset=0, max=DEFAULT_MAX)
+      log_announce("Going to download #{offset}-#{offset + max}/#{email_count(conn)} #{type} emails")
+      fetched = email_fetch(conn, offset, max)
+      log_announce("Going to save the #{fetched.length} fetched #{type} emails")
+      fetched.each do |body|
+        model = Model::TrainingEmail.new(:body => BSON::Binary.new(body),
+                                         :type => type)
+        model.save
+      end
+    end
+
+    def email_count(conn)
+      conn.responses['EXISTS'][-1]
+    end
+
+    def email_fetch(conn, offset, limit)
+      conn.fetch((offset+1)..(offset + limit), '(RFC822)').map { |struct| struct.attr['RFC822'] }
+    end
+  end
+end
+
+def main
+  options = { :hostname => 'imap.gmail.com' }
+  optparse = OptionParser.new do |opts|
+    opts.banner = "Usage: #{$0} [options]"
+    
+    opts.on('-v', '--verbosity', 'Verbosity of debugging output') do
+      $log.level -= 1
+    end
+    
+    opts.on('-h', '--help', 'Display this message') do
+      puts opts
+      exit(1)
+    end
+
+    opts.on('-s HOSTNAME', '--server HOSTNAME') do |hostname|
+      options[:hostname] = hostname
+    end
+
+    opts.on('-u USERNAME', '--username USERNAME') do |username|
+      options[:username] = username
+    end
+
+    opts.on('-p PASSWORD', '--password PASSWORD') do |password|
+      options[:password] = password
+    end
+  end
+  optparse.parse!
+  
+  if ARGV.length > 3
+    puts optparse
+    return 1
+  end
+
+  hostname = options[:hostname] || SpamCan::Settings[:imap, :hostname]
+  username = options[:username] || SpamCan::Settings[:imap, :username]
+  password = options[:password] || SpamCan::Settings[:imap, :password]
+  runner = SpamCan::UpdateCorpus.new(hostname, username, password)
+  runner.run
+  return 0
+end
+
+if $0 == __FILE__
+  ret = main
+  begin
+    exit(ret)
+  rescue TypeError
+    exit(0)
+  end
+end
