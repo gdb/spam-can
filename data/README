@@ -1,0 +1,7 @@
+Good places to get data:
+
+http://spamassassin.apache.org/publiccorpus/
+
+Import data using something like the following:
+
+bin/import-emails ~/projects/spam-can/data/easy_ham:ham ~/projects/spam-can/data/easy_ham_2:ham ~/projects/spam-can/data/hard_ham:ham ~/projects/spam-can/data/spam:spam ~/projects/spam-can/data/spam_2:spam
