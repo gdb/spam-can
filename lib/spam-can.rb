@@ -28,3 +28,4 @@ $:.unshift(File.join(File.dirname(__FILE__)))
 require 'spam-can/helpers'
 
 require 'spam-can/db'
+require 'spam-can/extn'

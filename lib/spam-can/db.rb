@@ -177,7 +177,7 @@ module SpamCan
         if contents =~ /^.*?\r?\n\r?\n(.*)$/m
           $1
         elsif contents !~ /:/
-          body
+          contents
         else
           nil
         end

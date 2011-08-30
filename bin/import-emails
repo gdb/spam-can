@@ -14,7 +14,19 @@ $log = Logger.new(STDOUT)
 $log.level = Logger::WARN
 
 module SpamCan
+  class EnumeratorHack
+    def initialize(&blk)
+      @blk = blk
+    end
+
+    def next
+      @blk.call { |*args| return args }
+    end
+  end
+
   class EmailQueue
+    include EMHelper
+
     def initialize(directory, spam)
       @directory = directory
       @spam = spam
@@ -24,11 +36,15 @@ module SpamCan
       files.length
     end
 
-    def each(&blk)
-      files.each do |name|
+    def each
+      iterator_map(files.each) do |name|
         contents = File.read(name)
-        blk.call(contents, @spam)
+        [contents, @spam]
       end
+    end
+
+    def to_s
+      "<#{self.class} #{@spam ? 'ham' : 'spam'} directory #{@directory}>"
     end
 
     private
@@ -40,6 +56,7 @@ module SpamCan
 
   class ImportEmails
     include CLIHelper
+    include EMHelper
 
     def initialize(email_queues)
       @email_queues = email_queues
@@ -48,28 +65,33 @@ module SpamCan
     def do_run
       @email_queues.each do |email_queue|
         checkpoint(:queue)
+        log_announce("Beginning work on #{email_queue}")
 
         # TODO: may want to yield to EM in here
-        email_queue.each do |contents, spam|
+        chunked_iterate(email_queue.each) do |contents, spam|
           checkpoint(:email)
 
           mail = Mail::Message.new(contents)
           if mail.charset
-            reencoded_contents = convert_to_utf8(contents, mail.charset)
-          else
-            reencoded_contents = contents
+            begin
+              reencoded_contents = convert_to_utf8(contents, mail.charset)
+            rescue Iconv::InvalidEncoding
+              log_warn("Invalid charset #{mail.charset}; not trying to reencode email")
+            end
           end
+
+          reencoded_contents ||= contents
           safe_contents = sanitize_utf8(reencoded_contents)
           log_warn("Sanitized invalid UTF-8 (original charset was #{mail.charset || 'unknown'}) in #{contents.inspect}") unless safe_contents == reencoded_contents
           raise "Sanitization of #{contents.inspect} failed" unless valid_utf8?(safe_contents)
           sha1sum = Digest::SHA1.digest(safe_contents)
-          te = Model::Email.new(:sha1sum => BSON::Binary.new(sha1sum),
-                                :contents => safe_contents,
-                                :spam => spam,
-                                :training => reserve_for_training?,
-                                :already_trained => false)
-          id = te.save
-          log_announce("Attempted to save #{id}")
+          email = Model::Email.new(:sha1sum => BSON::Binary.new(sha1sum),
+                                   :contents => safe_contents,
+                                   :spam => spam,
+                                   :training => reserve_for_training?,
+                                   :already_trained => false)
+          id = email.save
+          log_announce("Scheduled save of #{email}")
         end
       end
     end
@@ -89,7 +111,8 @@ module SpamCan
 
     def convert_to_utf8(str, src_charset)
       return nil if str.nil?
-      raise "Weird charset: #{src_charset.inspect}" unless src_charset =~ /^[\w-]+$/
+      # In case there are any security vulnerabilities in iconv...
+      raise Iconv::InvalidEncoding.new("Weird charset: #{src_charset.inspect}") unless src_charset.length < 100 && src_charset =~ /^[\w-]+$/
       safe_str = str + ' '
       sanitized = Iconv.conv("#{src_charset}//IGNORE", 'UTF-8', safe_str)
       sanitized[0...-1]

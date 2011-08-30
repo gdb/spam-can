@@ -1,6 +1,18 @@
 require 'set'
 
 module SpamCan
+  class EnumeratorHack
+    def initialize(&blk)
+      # Ruby 1.8.7's Enumerator doesn't take a block, or might prefer
+      # to use that instead.
+      @blk = blk
+    end
+
+    def next
+      @blk.call
+    end
+  end
+
   module EMHelper
     def gather(*deferred)
       raise "Cannot take block directly" if block_given?
@@ -33,6 +45,7 @@ module SpamCan
       outcome
     end
 
+    # Eventmachine map
     def lazy_map(deferred, &blk)
       outcome = EM::DefaultDeferrable.new
 
@@ -44,6 +57,27 @@ module SpamCan
       end
 
       outcome
+    end
+
+    def iterator_map(iter, &blk)
+      EnumeratorHack.new { blk.call(iter.next) }
+    end
+
+    def chunked_call(proc, chunk_size=10, &blk)
+      begin
+        chunk_size.times { proc.call(&blk) }
+        EM.next_tick { chunked_call(proc, chunk_size, &blk) }
+      rescue StopIteration
+        # TODO: maybe should invent own exception here? Not sure.
+      end
+    end
+
+    def chunked_iterate(iter, chunk_size=10, &blk)
+      begin
+        chunk_size.times { blk.call(iter.next) }
+        EM.next_tick { chunked_iterate(iter, chunk_size, &blk) }
+      rescue StopIteration
+      end
     end
   end
 
