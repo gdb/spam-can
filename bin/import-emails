@@ -1,12 +1,14 @@
 #!/usr/bin/env ruby
 require 'logger'
 require 'optparse'
+
 require 'rubygems'
-require 'net/imap'
 require 'digest/sha1'
+require 'iconv'
+require 'net/imap'
+require 'mail'
 
 require File.join(File.dirname(__FILE__), '../lib/spam-can')
-require 'iconv'
 
 $log = Logger.new(STDOUT)
 $log.level = Logger::WARN
@@ -51,8 +53,15 @@ module SpamCan
         email_queue.each do |contents, spam|
           checkpoint(:email)
 
-          safe_contents = sanitize_utf8(contents)
-          log_warn("Sanitized invalid UTF-8 in #{contents.inspect}") unless safe_contents == contents
+          mail = Mail::Message.new(contents)
+          if mail.charset
+            reencoded_contents = convert_to_utf8(contents, mail.charset)
+          else
+            reencoded_contents = contents
+          end
+          safe_contents = sanitize_utf8(reencoded_contents)
+          log_warn("Sanitized invalid UTF-8 (original charset was #{mail.charset || 'unknown'}) in #{contents.inspect}") unless safe_contents == reencoded_contents
+          raise "Sanitization of #{contents.inspect} failed" unless valid_utf8?(safe_contents)
           sha1sum = Digest::SHA1.digest(safe_contents)
           te = Model::Email.new(:sha1sum => BSON::Binary.new(sha1sum),
                                 :contents => safe_contents,
@@ -67,6 +76,23 @@ module SpamCan
 
     def reserve_for_training?
       rand > 0.5
+    end
+
+    def valid_utf8?(str)
+      begin
+        Iconv.conv('UTF-8', 'UTF-8', str)
+        true
+      rescue Iconv::IllegalSequence, Iconv::InvalidCharacter
+        false
+      end
+    end
+
+    def convert_to_utf8(str, src_charset)
+      return nil if str.nil?
+      raise "Weird charset: #{src_charset.inspect}" unless src_charset =~ /^[\w-]+$/
+      safe_str = str + ' '
+      sanitized = Iconv.conv("#{src_charset}//IGNORE", 'UTF-8', safe_str)
+      sanitized[0...-1]
     end
 
     def sanitize_utf8(str)
