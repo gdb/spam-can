@@ -34,9 +34,11 @@ module SpamCan
       tokenized.each do |token|
         count_attr = email.spam ? 'spam_count' : 'ham_count'
         Model::TokenCount.collection.update({ 'word' => token },
-                                             { '$inc' => { count_attr => 1 } },
-                                             { '$set' => { 'probability' => nil } },
-                                             :upsert => 1)
+                                            {
+                                              '$inc' => { count_attr => 1 },
+                                              '$set' => { 'probability' => nil },
+                                            },
+                                            :upsert => 1)
       end
     end
   end
