@@ -15,6 +15,10 @@ module SpamCan
     include EMHelper
 
     def do_run
+      correct = 0
+      false_positive = 0
+      false_negative = 0
+
       Model::Email.find(:training => false).each do |email|
         checkpoint(:email)
 
@@ -45,7 +49,18 @@ module SpamCan
           prob = num / (num + denom2)
           is_spam = prob > 0.9
 
-          log_announce("Probability #{prob} of #{email} being spam (#{is_spam == email.spam ? 'correct!' : 'wrong'})")
+          if is_spam == email.spam
+            correct_spec = 'correct!'
+            correct += 1
+          elsif is_spam
+            correct_spec = 'false negative'
+            false_negative += 1
+          else
+            correct_spec = 'false positive'
+            false_positive += 1
+          end
+          total = correct + false_positive + false_negative
+          log_announce("(#{correct/total.to_f} accuracy, #{false_positive/total.to_f} false positives, and #{false_negative/total.to_f} false negatives on #{total} samples) Probability #{prob} of #{email} being spam (#{correct_spec})")
         end
         g.errback do |_, err|
           log_error("Error", err)

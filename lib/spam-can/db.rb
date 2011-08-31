@@ -190,7 +190,7 @@ module SpamCan
 
       def to_s
         body = (b = extract_body) ? "#{b[0..20]}..." : nil
-        attrs = [['spam', spam], ['body', body], ['message_id', extract_message_id]].select { |a,b| !b.nil? }
+        attrs = [['training', training], ['spam', spam], ['body', body], ['message_id', extract_message_id]].select { |a,b| !b.nil? }
         "<#{self.class}[#{id}] #{attrs.map {|a,b| "#{a}=#{b.inspect}"}.join(' ')}>"
       end
     end
