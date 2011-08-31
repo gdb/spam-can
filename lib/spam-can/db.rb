@@ -197,7 +197,7 @@ module SpamCan
 
     class TokenCount < AbstractModel
       collection 'token_counts'
-      ensure_index [[:word, 1], [:spam, 1]], :unique => true
+      ensure_index :word, :unique => true
 
       prop :id, Object, :name => :_id
       prop :word, String
