@@ -3,13 +3,19 @@ require 'iconv'
 
 module SpamCan
   module EncodingHelper
+    UTF8_MAX = 0x10ffff
+
+    # It turns out iconv is ok with UTF-8 characters above UTF8_MAX,
+    # but BSON's UTF-8 validator is not. Hence, we must add some extra
+    # fanciness to iconv's work.
     def valid_utf8?(str)
       begin
         Iconv.conv('UTF-8', 'UTF-8', str)
-        true
       rescue Iconv::IllegalSequence, Iconv::InvalidCharacter
-        false
+        return false
       end
+      return false unless unicode_bytes(str).all? { |char| codepoint(char) < UTF8_MAX }
+      true
     end
 
     def convert_to_utf8(str, src_charset)
@@ -27,8 +33,22 @@ module SpamCan
       # iconv will break if given an invalid trailing byte.  Without this
       # space hack, sanitizing e.g. "\378" will fail
       safe_str = str + ' '
-      sanitized = Iconv.conv('UTF-8//IGNORE', 'UTF-8', safe_str)
-      sanitized[0...-1]
+      safe_sanitized = Iconv.conv('UTF-8//IGNORE', 'UTF-8', safe_str)
+      sanitized = safe_sanitized[0...-1]
+      unicode_bytes(sanitized).select { |char| codepoint(char) < UTF8_MAX }.join
+    end
+
+    private
+
+    def unicode_bytes(str)
+      str.split(//u)
+    end
+
+    def codepoint(char)
+      char = Iconv.conv('UCS-4', 'UTF-8', char)
+      res = 0
+      char.unpack('C*').each { |ord| res = 256 * res + ord }
+      res
     end
   end
 
