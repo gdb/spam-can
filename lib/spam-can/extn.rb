@@ -4,7 +4,7 @@ module EM::Mongo
 
     # Improve each's performance by doing work in chunks. Note that
     # the semantics here are probably mostly right.
-    def each(&blk)
+    def broken_each(&blk)
       raise "A callback block is required for #each" unless blk
 
       p = Proc.new do
