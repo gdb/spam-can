@@ -7,15 +7,13 @@ module SpamCan
 
     # It turns out iconv is ok with UTF-8 characters above UTF8_MAX,
     # but BSON's UTF-8 validator is not. Hence, we must add some extra
-    # fanciness to iconv's work.
+    # fanciness to iconv's work. I was originally using Ruby to reject
+    # high-order codepoints, but it's faster just to shell out to
+    # BSON.
+    #
+    # TODO: write validator in C - BSON documents are limited in size.
     def valid_utf8?(str)
-      begin
-        Iconv.conv('UTF-8', 'UTF-8', str)
-      rescue Iconv::IllegalSequence, Iconv::InvalidCharacter
-        return false
-      end
-      return false unless unicode_bytes(str).all? { |char| codepoint(char) < UTF8_MAX }
-      true
+      valid_utf8_bson?(str)
     end
 
     def convert_to_utf8(str, src_charset)
@@ -35,10 +33,25 @@ module SpamCan
       safe_str = str + ' '
       safe_sanitized = Iconv.conv('UTF-8//IGNORE', 'UTF-8', safe_str)
       sanitized = safe_sanitized[0...-1]
-      unicode_bytes(sanitized).select { |char| codepoint(char) < UTF8_MAX }.join
+      if valid_utf8_bson?(sanitized)
+        sanitized
+      else
+        # Only do this extra sanitization if needed.
+        unicode_bytes(sanitized).select { |char| codepoint(char) < UTF8_MAX }.join
+      end
     end
 
     private
+
+    def valid_utf8_bson?(str)
+      begin
+        BSON::BSON_C.serialize({ '' => str })
+      rescue BSON::InvalidStringEncoding
+        false
+      else
+        true
+      end
+    end
 
     def unicode_bytes(str)
       str.split(//u)
