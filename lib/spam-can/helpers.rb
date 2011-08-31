@@ -1,6 +1,37 @@
 require 'set'
+require 'iconv'
 
 module SpamCan
+  module EncodingHelper
+    def valid_utf8?(str)
+      begin
+        Iconv.conv('UTF-8', 'UTF-8', str)
+        true
+      rescue Iconv::IllegalSequence, Iconv::InvalidCharacter
+        false
+      end
+    end
+
+    def convert_to_utf8(str, src_charset)
+      return nil if str.nil?
+      # In case there are any security vulnerabilities in iconv...
+      raise Iconv::InvalidEncoding.new("Weird charset: #{src_charset.inspect}") unless src_charset.length < 100 && src_charset =~ /^[\w-]+$/
+      safe_str = str + ' '
+      sanitized = Iconv.conv('UTF-8//IGNORE', src_charset, safe_str)
+      sanitized[0...-1]
+    end
+
+    def sanitize_utf8(str)
+      return nil if str.nil?
+      # Per http://po-ru.com/diary/fixing-invalid-utf-8-in-ruby-revisited/
+      # iconv will break if given an invalid trailing byte.  Without this
+      # space hack, sanitizing e.g. "\378" will fail
+      safe_str = str + ' '
+      sanitized = Iconv.conv('UTF-8//IGNORE', 'UTF-8', safe_str)
+      sanitized[0...-1]
+    end
+  end
+
   class EnumeratorHack
     def initialize(&blk)
       # Ruby 1.8.7's Enumerator doesn't take a block, or might prefer

@@ -145,7 +145,12 @@ module SpamCan
           @values['created_at'] ||= Time.now
           @values['updated_at'] = Time.now
         end
-        collection.save(@values)
+        begin
+          collection.save(@values)
+        rescue => e
+          log_error("Could not save #{self.inspect}", e)
+          raise
+        end
       end
     end
 
